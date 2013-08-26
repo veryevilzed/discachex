@@ -44,7 +44,7 @@ defmodule Discachex.Storage do
 		#
 		ts_now = timestamp(0)
 		case :mnesia.dirty_match_object Discachex.Defs.CacheRec[key: key, _: :_] do
-			[Discachex.Defs.CacheRec[stamp_id: {time, _}, value: value]] when time < ts_now -> value
+			[Discachex.Defs.CacheRec[stamp_id: {time, _}, value: value]] when time > ts_now -> value
 			_ -> nil
 		end
 	end
