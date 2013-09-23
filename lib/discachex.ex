@@ -15,8 +15,9 @@ defmodule Discachex.Storage do
 	def init do
 		:mnesia.create_table Discachex.Defs.CacheRec, [
 			ram_copies: [:erlang.node|:erlang.nodes], 
-			attributes: Discachex.Defs.CacheRec.fields, 
-			index: [:key]
+			type: :ordered_set,
+			storage_properties: [ets: [read_concurrency: true]],
+			attributes: Discachex.Defs.CacheRec.fields
 		]
 	end
 	
@@ -27,14 +28,14 @@ defmodule Discachex.Storage do
 	end
 
 	def set(key, value, expiration // nil) do
-		:mnesia.activity :transaction, fn ->
-			case :mnesia.match_object Discachex.Defs.CacheRec[key: key, _: :_] do
+		:mnesia.activity :sync_dirty, fn ->
+			case :mnesia.read Discachex.Defs.CacheRec, key do
 				[] -> 
-					:mnesia.write Discachex.Defs.CacheRec[stamp_id: {timestamp(expiration), key}, key: key, value: value]
+					:mnesia.write Discachex.Defs.CacheRec[stamp_id: timestamp(expiration), key: key, value: value]
 				list ->
-					lc obj inlist list, do: :mnesia.delete_object(obj)
+					lc obj inlist list, do: :mnesia.delete({Discachex.Defs.CacheRec, obj})
 
-					:mnesia.write Discachex.Defs.CacheRec[stamp_id: {timestamp(expiration), key}, key: key, value: value]
+					:mnesia.write Discachex.Defs.CacheRec[stamp_id: timestamp(expiration), key: key, value: value]
 			end
 		end
 	end
@@ -43,8 +44,8 @@ defmodule Discachex.Storage do
 		# not going to report expired records, and not going to panic about their existence...
 		#
 		ts_now = timestamp(0)
-		case :mnesia.dirty_match_object Discachex.Defs.CacheRec[key: key, _: :_] do
-			[Discachex.Defs.CacheRec[stamp_id: {time, _}, value: value]] when time > ts_now -> value
+		case :ets.lookup Discachex.Defs.CacheRec, key do
+			[Discachex.Defs.CacheRec[stamp_id: time, value: value]] when time > ts_now -> value
 			_ -> nil
 		end
 	end
@@ -52,20 +53,25 @@ defmodule Discachex.Storage do
 		#
 		# just report what we have now, no matter what it takes...
 		#
-		case :mnesia.dirty_match_object Discachex.Defs.CacheRec[key: key, _: :_] do
+		case :ets.lookup Discachex.Defs.CacheRec, key do
 			[Discachex.Defs.CacheRec[value: value]] -> value
 			_ -> nil
 		end
 	end
 
+	def list_old_keys key, ts_now do
+		case :ets.lookup Discachex.Defs.CacheRec, key do
+			:'$end_of_table' -> []
+			[Discachex.Defs.CacheRec[key: key, stamp_id: stamp]] when stamp < ts_now ->
+				[key|list_old_keys :ets.next(Discachex.Defs.CacheRec,key), ts_now]
+			[Discachex.Defs.CacheRec[]] -> list_old_keys :ets.next(Discachex.Defs.CacheRec,key), ts_now
+			_ -> []
+		end
+	end
 	def list_old_keys do
 		ts_now = timestamp 0
-		:mnesia.activity(:sync_dirty, fn -> 
-			:mnesia.select(Discachex.Defs.CacheRec, ( 
-				[{Discachex.Defs.CacheRec[stamp_id: {:"$1", :_}, key: :_, value: :_], [{:<, :"$1", ts_now}], [:"$_"]}]
-			)) 
-			|> Enum.each(fn (obj) -> :mnesia.delete_object(obj) end)
-		end)
+		key = :ets.first Discachex.Defs.CacheRec
+		list_old_keys key, ts_now
 	end
 end
 
@@ -80,7 +86,10 @@ defmodule Discachex.GC do
 	end
 
 	def handle_info :cleanup, state do
-		{time, _} = :timer.tc fn -> Discachex.Storage.list_old_keys end
+		{time, _} = :timer.tc fn -> 
+			Discachex.Storage.list_old_keys 
+			|> Enum.each &(:mnesia.dirty_delete Discachex.Defs.CacheRec, &1)
+		end
 		cond do
 			time > 10000 -> IO.puts "Clean-up took #{time}us\r"
 			true -> :ok
