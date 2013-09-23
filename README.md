@@ -1,5 +1,25 @@
 # Discachex
 
+And that's it.
+
+
+New version, 7 times faster writes, 2 time faster GC, and 100 times faster reads:
+
+```
+Clean-up took 20753us
+{1709076, :ok} <--- we were able to write data in 1.7s (instead of 7.29 before)
+iex(2)> Clean-up took 32790us
+Clean-up took 35954us
+Clean-up took 36521us
+Clean-up took 37917us
+Clean-up took 38859us
+Clean-up took 53695us
+Clean-up took 331461us <--- garbage collection started here
+Clean-up took 165239us <--- garbage collection ended in 496700us (instead of 1042728)
+```
+
+
+
 Performance is questionable, but it works well where mnesia works well.
 
 
@@ -34,5 +54,3 @@ Clean-up took 183309us
 Clean-up took 164085us
 Clean-up took 148092us <--- garbage collection ended here...
 ```
-
-And that's it.
