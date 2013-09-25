@@ -1,14 +1,25 @@
 defmodule DiscachexTest do
   use ExUnit.Case
+  require Discachex
 
-  test "100k records" do
-  	{time, :ok} = :timer.tc fn -> 
-  		Enum.each 1..100000, fn v -> 
-  			Discachex.Storage.set v+100000000, :random.uniform, 7000 
-  		end 
-  	end
-  	IO.puts "Test took #{time}us"
-  	receive do after 20000 -> :ok end
-  	assert(true)
+  test "Set works" do
+    Discachex.Storage.set "testkey", "value"
+    assert(Discachex.Storage.get("testkey") == "value")
+  end
+  test "Expire works" do
+    Discachex.Storage.set "testkey2", "value", 1000
+    receive do after 1500 -> :ok end
+    assert(Discachex.Storage.get("testkey2") == nil)
+  end
+  test "Dirty reads" do
+    Discachex.Storage.set "testkey3", "value", 1000
+    assert(Discachex.Storage.dirty_get("testkey3") == "value")
+  end
+  test "Macros are working" do
+    Discachex.set "testkey4", "value"
+    assert(Discachex.get("testkey4") == "value")
+  end
+  test "Memo works" do
+    assert(Discachex.memo(&(:random.uniform/1), [100]) == Discachex.memo(&(:random.uniform/1), [100]))
   end
 end

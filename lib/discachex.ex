@@ -1,12 +1,42 @@
 defmodule Discachex do
-  use Application.Behaviour
+	use Application.Behaviour
 
-  # See http://elixir-lang.org/docs/stable/Application.Behaviour.html
-  # for more information on OTP Applications
-  def start(_type, _args) do
-  	Discachex.Storage.init
-    Discachex.Supervisor.start_link
-  end
+	# See http://elixir-lang.org/docs/stable/Application.Behaviour.html
+	# for more information on OTP Applications
+	def start(_type, _args) do
+		Discachex.Storage.init
+		Discachex.Supervisor.start_link
+	end
+	defmacro set(key, value) do
+		quote do
+			Discachex.Storage.set(unquote(key), unquote(value))
+		end
+	end
+	defmacro set(key, value, expiration) do
+		quote do 
+			Discachex.Storage.set(unquote(key), unquote(value), unquote(expiration))
+		end
+	end
+	defmacro get(key) do
+		quote do
+			Discachex.Storage.get(unquote(key))
+		end
+	end
+	defmacro dirty_get(key) do
+		quote do
+			Discachex.Storage.dirty_get(unquote(key))
+		end
+	end
+
+	def memo(f, args, time // 5000) do
+		case get({f, args}) do
+			nil -> 
+				result = :erlang.apply f, args
+				set({f,args}, result, 5000)
+				result
+			data -> data
+		end
+	end
 end
 
 defmodule Discachex.Storage do
@@ -96,5 +126,17 @@ defmodule Discachex.GC do
 		end
 		:erlang.send_after 1000, self, :cleanup
 		{:noreply, state}
+	end
+end
+
+defmodule Discachex.Bench do
+	def run do
+		{time, :ok} = :timer.tc fn -> 
+	  		Enum.each 1..100000, fn v -> 
+	  			Discachex.Storage.set v+100000000, :random.uniform, 7000 
+	  		end 
+	  	end
+	  	IO.puts "Test took #{time}us"
+	  	receive do after 20000 -> :ok end
 	end
 end
