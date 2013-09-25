@@ -18,6 +18,14 @@ Clean-up took 331461us <--- garbage collection started here
 Clean-up took 165239us <--- garbage collection ended in 496700us (instead of 1042728)
 ```
 
+Using Discachex.memo:
+
+```elixir
+def some_function(args), do: Discachex.memo( fn fargs -> 
+	.... 
+end, args)
+```
+
 
 
 Performance is questionable, but it works well where mnesia works well.
