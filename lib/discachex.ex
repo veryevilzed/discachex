@@ -44,11 +44,12 @@ defmodule Discachex.Storage do
 
 	def init do
 		:mnesia.create_table Discachex.Defs.CacheRec, [
-			ram_copies: [:erlang.node|:erlang.nodes], 
+			ram_copies: :mnesia.system_info(:db_nodes), 
 			type: :ordered_set,
 			storage_properties: [ets: [read_concurrency: true]],
 			attributes: Discachex.Defs.CacheRec.fields
 		]
+		:mnesia.add_table_copy Discachex.Defs.CacheRec, :erlang.node, :ram_copies
 	end
 	
 	def timestamp(nil), do: nil
