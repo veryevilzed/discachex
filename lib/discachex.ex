@@ -122,7 +122,7 @@ defmodule Discachex.GC do
 			|> Enum.each &(:mnesia.dirty_delete Discachex.Defs.CacheRec, &1)
 		end
 		cond do
-			time > 10000 -> IO.puts "Clean-up took #{time}us\r"
+			time > 100000 -> IO.puts "Clean-up took #{time}us\r"
 			true -> :ok
 		end
 		:erlang.send_after 1000, self, :cleanup
