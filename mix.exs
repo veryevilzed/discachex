@@ -4,7 +4,6 @@ defmodule Discachex.Mixfile do
   def project do
     [ app: :discachex,
       version: "0.0.1",
-      elixir: "~> 0.10.2-dev",
       deps: deps ]
   end
 
