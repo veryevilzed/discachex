@@ -32,7 +32,7 @@ defmodule Discachex do
 		case get({f, args}) do
 			nil -> 
 				result = :erlang.apply f, args
-				set({f,args}, result, 5000)
+				set({f,args}, result, time)
 				result
 			data -> data
 		end
