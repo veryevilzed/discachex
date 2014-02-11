@@ -31,6 +31,10 @@ defmodule DiscachexTest do
     :timer.sleep(:timer.seconds(1))
     assert Discachex.get(:somehello) == nil
   end
+  test "Serial get works" do
+    Discachex.serial_set :serialworld, :thevalue
+    assert Discachex.serial_get(:serialworld) == :thevalue
+  end
   test "Messaging works" do
     root = self
     Discachex.set :waitworld, :thevalue, :timer.seconds(5)

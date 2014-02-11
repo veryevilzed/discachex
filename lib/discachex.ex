@@ -17,6 +17,11 @@ defmodule Discachex do
 			Discachex.Storage.serial_set(unquote(key), unquote(value))
 		end
 	end
+	defmacro serial_get(key) do
+		quote do
+			Discachex.Storage.serial_get(unquote(key))
+		end
+	end
 	defmacro serial_set(key, value, timeout) do
 		quote do
 			Discachex.Storage.serial_set(unquote(key), unquote(value), unquote(timeout))
@@ -139,6 +144,15 @@ defmodule Discachex.Storage do
 			end
 		end
 		notify_waiters(key, value)
+	end
+	def serial_get(key) do
+		ts_now = timestamp(0)
+		:mnesia.activity :transaction, fn ->
+			case :mnesia.read Discachex.Defs.CacheRec, key do
+				[Discachex.Defs.CacheRec[stamp_id: time, value: value]] when time > ts_now -> value
+				_ -> nil
+			end
+		end
 	end
 	def get(key) do
 		#
