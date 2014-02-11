@@ -12,6 +12,26 @@ defmodule Discachex do
 			Discachex.Storage.set(unquote(key), unquote(value))
 		end
 	end
+	defmacro serial_set(key, value) do
+		quote do
+			Discachex.Storage.serial_set(unquote(key), unquote(value))
+		end
+	end
+	defmacro serial_set(key, value, timeout) do
+		quote do
+			Discachex.Storage.serial_set(unquote(key), unquote(value), unquote(timeout))
+		end
+	end
+	defmacro wait_value(key, value, timeout) do
+		quote do
+			Discachex.Storage.wait_for_update(unquote(key), unquote(value), unquote(timeout))
+		end
+	end
+	defmacro wait_value(key, value) do
+		quote do
+			Discachex.Storage.wait_for_update(unquote(key), unquote(value))
+		end
+	end
 	defmacro set(key, value, expiration) do
 		quote do 
 			Discachex.Storage.set(unquote(key), unquote(value), unquote(expiration))
@@ -28,7 +48,7 @@ defmodule Discachex do
 		end
 	end
 
-	def memo(f, args, time // 5000) do
+	def memo(f, args, time \\ 5000) do
 		case get({f, args}) do
 			nil -> 
 				result = :erlang.apply f, args
@@ -58,7 +78,56 @@ defmodule Discachex.Storage do
 		a * 1000*1000 * 1000*1000 + b*1000*1000 + c + expiration*1000
 	end
 
-	def set(key, value, expiration // nil) do
+	def notify_waiters(key, value) do
+		case :pg2.get_members :discachex_waiters do
+			{:error, {:no_such_group, :ok}} -> :ok
+			list when length(list) > 0 ->
+				lc pid inlist (list |> Enum.uniq), do: send(pid, {:key_updated, key, value})
+			_ -> :ok
+		end
+	end
+	def wait_for_update(key, value, timeout \\ 1000) do # waits for value to change...
+		:pg2.create :discachex_waiters
+		:pg2.join :discachex_waiters, self
+
+		result = :mnesia.activity :transaction, fn ->
+			case :mnesia.read Discachex.Defs.CacheRec, key do
+				[] -> :no_value
+				[Discachex.Defs.CacheRec[value: ^value]|_] -> :old_value
+				[Discachex.Defs.CacheRec[value: new_value]|_] -> {:new_value, new_value}
+			end
+		end
+		case result do
+			{:new_value, new_value} -> {:key_updated, key, new_value}
+			_ ->
+				receive do
+					{:key_updated, ^key, ^value} -> wait_for_update(key, value, timeout)
+					{:key_updated, ^key, new_value} -> {:key_updated, key, new_value}
+					{:key_updated, _, _} -> wait_for_update(key, value, timeout)
+					after timeout -> :timeout
+				end
+		end
+	end
+
+	def serial_set(key, value, expiration \\ nil) do
+		result = :mnesia.activity :transaction, fn ->
+			case :mnesia.read Discachex.Defs.CacheRec, key do
+				[] -> 
+					:mnesia.write Discachex.Defs.CacheRec[stamp_id: timestamp(expiration), key: key, value: value]
+					{:written, value}
+				[Discachex.Defs.CacheRec[stamp_id: _time, value: new_value]|_] ->
+					{:already_set, new_value}
+			end
+		end
+		case result do
+			{:written, value} ->
+				notify_waiters(key, value)
+			_ -> :ok
+		end
+		result
+	end
+
+	def set(key, value, expiration \\ nil) do
 		:mnesia.activity :sync_dirty, fn ->
 			case :mnesia.read Discachex.Defs.CacheRec, key do
 				[] -> 
@@ -69,6 +138,7 @@ defmodule Discachex.Storage do
 					:mnesia.write Discachex.Defs.CacheRec[stamp_id: timestamp(expiration), key: key, value: value]
 			end
 		end
+		notify_waiters(key, value)
 	end
 	def get(key) do
 		#
