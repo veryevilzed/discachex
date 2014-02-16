@@ -49,4 +49,10 @@ defmodule DiscachexTest do
     end
     assert test_results == :ok
   end
+
+  test "transactions work" do
+    result1 = Discachex.transaction(:some_transaction, fn -> :result_one end)
+    result2 = Discachex.transaction(:some_transaction, fn -> :result_two end)
+    assert(result1 == result2)
+  end
 end

@@ -53,6 +53,12 @@ defmodule Discachex do
 		end
 	end
 
+	defmacro transaction(trx_key, function, time \\ :timer.seconds(600)) do
+		quote do
+			Discachex.Trx.start_transaction(unquote(trx_key), unquote(function), unquote(time))
+		end
+	end
+
 	def memo(f, args, time \\ 5000) do
 		case get({f, args}) do
 			nil -> 
@@ -211,6 +217,24 @@ defmodule Discachex.GC do
 		end
 		:erlang.send_after 1000, self, :cleanup
 		{:noreply, state}
+	end
+end
+
+defmodule Discachex.Trx do
+	require Discachex
+	def start_transaction(trx_key, processor, ttl) do
+		case Discachex.serial_set(trx_key, :processing) do
+			{:already_set, :processing} ->
+				case Discachex.wait_value(trx_key, :processing, ttl) do
+					{:key_updated, ^trx_key, reply_data} -> reply_data
+					:timeout -> :failed
+				end
+			{:already_set, reply_data} -> reply_data
+			{:written, :processing} ->
+				result = processor.()
+				Discachex.set trx_key, result
+				result
+		end
 	end
 end
 
