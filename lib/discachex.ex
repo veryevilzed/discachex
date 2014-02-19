@@ -223,7 +223,7 @@ end
 defmodule Discachex.Trx do
 	require Discachex
 	def start_transaction(trx_key, processor, ttl) do
-		case Discachex.serial_set(trx_key, :processing) do
+		case Discachex.serial_set(trx_key, :processing, ttl) do
 			{:already_set, :processing} ->
 				case Discachex.wait_value(trx_key, :processing, ttl) do
 					{:key_updated, ^trx_key, reply_data} -> reply_data
@@ -232,7 +232,7 @@ defmodule Discachex.Trx do
 			{:already_set, reply_data} -> reply_data
 			{:written, :processing} ->
 				result = processor.()
-				Discachex.set trx_key, result
+				Discachex.set trx_key, result, ttl
 				result
 		end
 	end
