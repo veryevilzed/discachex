@@ -218,7 +218,7 @@ defmodule Discachex.SerialKiller do
 			case :ets.lookup Discachex.Defs.CacheRec, key do
 				[Discachex.Defs.CacheRec[stamp_id: stamp]] when is_integer(stamp) ->
 					case :gb_trees.is_defined stamp, tree do
-						false -> :gb_trees.insert stamp, [key]
+						false -> :gb_trees.insert stamp, [key], tree
 						true  ->
 							prev_value = :gb_trees.get stamp, tree
 							:gb_trees.update stamp, [key | prev_value]
