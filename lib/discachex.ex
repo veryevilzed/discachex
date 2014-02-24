@@ -124,7 +124,9 @@ defmodule Discachex.Storage do
 		result = :mnesia.activity :transaction, fn ->
 			case :mnesia.read Discachex.Defs.CacheRec, key do
 				[] -> 
-					:mnesia.write Discachex.Defs.CacheRec[stamp_id: timestamp(expiration), key: key, value: value]
+					ts = timestamp(expiration)
+					:gen_server.cast Discachex.SerialKiller, {:expire, key, ts}
+					:mnesia.write Discachex.Defs.CacheRec[stamp_id: ts, key: key, value: value]
 					{:written, value}
 				[Discachex.Defs.CacheRec[stamp_id: _time, value: new_value]|_] ->
 					{:already_set, new_value}
@@ -140,12 +142,14 @@ defmodule Discachex.Storage do
 
 	def set(key, value, expiration \\ nil) do
 		:mnesia.activity :sync_dirty, fn ->
+			ts = timestamp(expiration)
 			case :mnesia.read Discachex.Defs.CacheRec, key do
 				[] -> 
-					:mnesia.write Discachex.Defs.CacheRec[stamp_id: timestamp(expiration), key: key, value: value]
+					:gen_server.cast Discachex.SerialKiller, {:expire, key, ts}
+					:mnesia.write Discachex.Defs.CacheRec[stamp_id: ts, key: key, value: value]
 				list ->
 					lc obj inlist list, do: :mnesia.delete({Discachex.Defs.CacheRec, obj})
-
+					:gen_server.cast Discachex.SerialKiller, {:expire, key, ts}
 					:mnesia.write Discachex.Defs.CacheRec[stamp_id: timestamp(expiration), key: key, value: value]
 			end
 		end
@@ -193,6 +197,49 @@ defmodule Discachex.Storage do
 		ts_now = timestamp 0
 		key = :ets.first Discachex.Defs.CacheRec
 		list_old_keys key, ts_now
+	end
+end
+
+defmodule Discachex.SerialKiller do
+	use GenServer.Behaviour
+	@refresh_timeout :timer.seconds(1)
+
+	def start_link, do: :gen_server.start_link({:local, Discachex.SerialKiller}, Discachex.SerialKiller, [], [])
+
+	defp timestamp() do
+		{a,b,c} = :erlang.now
+		a * 1000*1000 * 1000*1000 + b*1000*1000 + c
+	end
+
+	defp killer(stamp_now) do
+		receive do
+			{key, stamp} when stamp < stamp_now ->
+				case :ets.lookup(Discachex.Defs.CacheRec, key) do
+					[Discachex.Defs.CacheRec[stamp_id: stamp_real]] when stamp_real < stamp_now ->
+						:mnesia.dirty_delete Discachex.Defs.CacheRec, key
+					_ -> :ok
+				end
+			after 1000 -> :ok
+		end			
+		killer(timestamp)
+	end
+
+	def init(_) do
+		killer_pid = spawn_link(fn -> killer(timestamp) end)
+		keys = :mnesia.dirty_all_keys(Discachex.Defs.CacheRec)
+		lc key inlist keys do
+			case :ets.lookup Discachex.Defs.CacheRec, key do
+				[Discachex.Defs.CacheRec[stamp_id: stamp]] when is_integer(stamp) ->
+					send killer_pid, {key, stamp}
+				_ -> nil
+			end
+		end
+		{:ok, killer_pid}
+	end
+	def handle_cast({:expire, key, nil}, killer_pid), do: {:noreply, killer_pid}
+	def handle_cast({:expire, key, stamp}, killer_pid) do
+		send killer_pid, {key, stamp}
+		{:noreply, killer_pid}
 	end
 end
 
