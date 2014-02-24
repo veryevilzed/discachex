@@ -211,35 +211,56 @@ defmodule Discachex.SerialKiller do
 		a * 1000*1000 * 1000*1000 + b*1000*1000 + c
 	end
 
-	defp killer(stamp_now) do
-		receive do
-			{key, stamp} when stamp < stamp_now ->
-				case :ets.lookup(Discachex.Defs.CacheRec, key) do
-					[Discachex.Defs.CacheRec[stamp_id: stamp_real]] when stamp_real < stamp_now ->
-						:mnesia.dirty_delete Discachex.Defs.CacheRec, key
-					_ -> :ok
-				end
-			after 1000 -> :ok
-		end			
-		killer(timestamp)
-	end
-
 	def init(_) do
-		killer_pid = spawn_link(fn -> killer(timestamp) end)
 		keys = :mnesia.dirty_all_keys(Discachex.Defs.CacheRec)
-		lc key inlist keys do
+		tree = Enum.reduce keys, :gb_trees.empty, fn key, tree ->
 			case :ets.lookup Discachex.Defs.CacheRec, key do
 				[Discachex.Defs.CacheRec[stamp_id: stamp]] when is_integer(stamp) ->
-					send killer_pid, {key, stamp}
+					case :gb_trees.is_defined stamp, tree do
+						false -> :gb_trees.insert stamp, [key]
+						true  ->
+							prev_value = :gb_trees.get stamp, tree
+							:gb_trees.update stamp, [key | prev_value]
+					end
 				_ -> nil
 			end
 		end
-		{:ok, killer_pid}
+		{:ok, tree, @refresh_timeout}
 	end
-	def handle_cast({:expire, key, nil}, killer_pid), do: {:noreply, killer_pid}
-	def handle_cast({:expire, key, stamp}, killer_pid) do
-		send killer_pid, {key, stamp}
-		{:noreply, killer_pid}
+
+	def handle_info(:timeout, tree) do
+		case :gb_trees.is_empty tree do
+			false ->
+				ts_now = timestamp
+				{stamp, keys} = :gb_trees.smallest tree
+				case stamp < ts_now do
+					true ->
+						Enum.each(keys, fn key ->
+							case :ets.lookup(Discachex.Defs.CacheRec, key) do
+								[Discachex.Defs.CacheRec[stamp_id: new_stamp]] when new_stamp < ts_now ->
+									:mnesia.dirty_delete Discachex.Defs.CacheRec, key
+								_ -> :ok
+							end
+						end)
+						tree = :gb_trees.delete stamp, tree
+						{:noreply, tree, @refresh_timeout}
+					false ->
+						{:noreply, tree, @refresh_timeout}
+				end
+			true ->
+				{:noreply, tree, @refresh_timeout}
+		end
+	end
+
+	def handle_cast({:expire, key, nil}, tree), do: {:noreply, tree, @refresh_timeout}
+	def handle_cast({:expire, key, stamp}, tree) do
+		tree = case :gb_trees.is_defined stamp, tree do
+			false -> :gb_trees.insert stamp, [key], tree
+			true  ->
+				prev_value = :gb_trees.get stamp, tree
+				:gb_trees.update stamp, [key | prev_value]
+		end
+		{:noreply, tree, @refresh_timeout}
 	end
 end
 
