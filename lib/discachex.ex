@@ -223,7 +223,7 @@ defmodule Discachex.SerialKiller do
 							prev_value = :gb_trees.get stamp, tree
 							:gb_trees.update stamp, [key | prev_value]
 					end
-				_ -> nil
+				_ -> tree
 			end
 		end
 		{:ok, tree, @refresh_timeout}
