@@ -212,6 +212,7 @@ defmodule Discachex.SerialKiller do
 	end
 
 	def init(_) do
+		:mnesia.wait_for_tables [Discachex.Defs.CacheRec], :infinity
 		keys = :mnesia.dirty_all_keys(Discachex.Defs.CacheRec)
 		tree = Enum.reduce keys, :gb_trees.empty, fn key, tree ->
 			case :ets.lookup Discachex.Defs.CacheRec, key do
