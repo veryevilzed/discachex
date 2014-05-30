@@ -1,10 +1,10 @@
 defmodule Discachex do
-	use Application.Behaviour
+	use Application
 
-	# See http://elixir-lang.org/docs/stable/Application.Behaviour.html
-	# for more information on OTP Applications
 	def start(_type, _args) do
+		IO.puts "... starting up Discachex..."
 		Discachex.Storage.init
+		IO.puts "... storage initialized ..."
 		Discachex.Supervisor.start_link
 	end
 	defmacro set(key, value) do
@@ -74,13 +74,15 @@ defmodule Discachex.Storage do
 	require Discachex.Defs
 
 	def init do
-		:mnesia.create_table Discachex.Defs.CacheRec, [
+		table = :mnesia.create_table :cacherec, [
 			ram_copies: :mnesia.system_info(:db_nodes), 
 			type: :ordered_set,
 			storage_properties: [ets: [read_concurrency: true]],
-			attributes: Discachex.Defs.CacheRec.fields
+			attributes: [:key, :stamp_id, :value]
 		]
-		:mnesia.add_table_copy Discachex.Defs.CacheRec, :erlang.node, :ram_copies
+		IO.puts "created table with result: #{inspect table}"
+		copy = :mnesia.add_table_copy :cacherec, :erlang.node, :ram_copies
+		IO.puts "table copy added... with result: #{inspect copy}"
 	end
 	
 	def timestamp(nil), do: nil
@@ -93,7 +95,7 @@ defmodule Discachex.Storage do
 		case :pg2.get_members :discachex_waiters do
 			{:error, {:no_such_group, :ok}} -> :ok
 			list when length(list) > 0 ->
-				lc pid inlist (list |> Enum.uniq), do: send(pid, {:key_updated, key, value})
+				for pid <- (list |> Enum.uniq), do: send(pid, {:key_updated, key, value})
 			_ -> :ok
 		end
 	end
@@ -102,10 +104,10 @@ defmodule Discachex.Storage do
 		:pg2.join :discachex_waiters, self
 
 		result = :mnesia.activity :transaction, fn ->
-			case :mnesia.read Discachex.Defs.CacheRec, key do
+			case :mnesia.read :cacherec, key do
 				[] -> :no_value
-				[Discachex.Defs.CacheRec[value: ^value]|_] -> :old_value
-				[Discachex.Defs.CacheRec[value: new_value]|_] -> {:new_value, new_value}
+				[Discachex.Defs.cacherec(value: x_value)|_] when x_value == value -> :old_value
+				[Discachex.Defs.cacherec(value: new_value)|_] -> {:new_value, new_value}
 			end
 		end
 		case result do
@@ -122,13 +124,13 @@ defmodule Discachex.Storage do
 
 	def serial_set(key, value, expiration \\ nil) do
 		result = :mnesia.activity :transaction, fn ->
-			case :mnesia.read Discachex.Defs.CacheRec, key do
+			case :mnesia.read :cacherec, key do
 				[] -> 
 					ts = timestamp(expiration)
 					:gen_server.cast Discachex.SerialKiller, {:expire, key, ts}
-					:mnesia.write Discachex.Defs.CacheRec[stamp_id: ts, key: key, value: value]
+					:mnesia.write Discachex.Defs.cacherec(stamp_id: ts, key: key, value: value)
 					{:written, value}
-				[Discachex.Defs.CacheRec[stamp_id: _time, value: new_value]|_] ->
+				[Discachex.Defs.cacherec(stamp_id: _time, value: new_value)|_] ->
 					{:already_set, new_value}
 			end
 		end
@@ -143,14 +145,14 @@ defmodule Discachex.Storage do
 	def set(key, value, expiration \\ nil) do
 		:mnesia.activity :sync_dirty, fn ->
 			ts = timestamp(expiration)
-			case :mnesia.read Discachex.Defs.CacheRec, key do
+			case :mnesia.read :cacherec, key do
 				[] -> 
 					:gen_server.cast Discachex.SerialKiller, {:expire, key, ts}
-					:mnesia.write Discachex.Defs.CacheRec[stamp_id: ts, key: key, value: value]
+					:mnesia.write Discachex.Defs.cacherec(stamp_id: ts, key: key, value: value)
 				list ->
-					lc obj inlist list, do: :mnesia.delete({Discachex.Defs.CacheRec, obj})
+					for obj <- list, do: :mnesia.delete({:cacherec, obj})
 					:gen_server.cast Discachex.SerialKiller, {:expire, key, ts}
-					:mnesia.write Discachex.Defs.CacheRec[stamp_id: timestamp(expiration), key: key, value: value]
+					:mnesia.write Discachex.Defs.cacherec(stamp_id: timestamp(expiration), key: key, value: value)
 			end
 		end
 		notify_waiters(key, value)
@@ -158,8 +160,8 @@ defmodule Discachex.Storage do
 	def serial_get(key) do
 		ts_now = timestamp(0)
 		:mnesia.activity :transaction, fn ->
-			case :mnesia.read Discachex.Defs.CacheRec, key do
-				[Discachex.Defs.CacheRec[stamp_id: time, value: value]] when time > ts_now -> value
+			case :mnesia.read :cacherec, key do
+				[Discachex.Defs.cacherec(stamp_id: time, value: value)] when time > ts_now -> value
 				_ -> nil
 			end
 		end
@@ -169,8 +171,8 @@ defmodule Discachex.Storage do
 		# not going to report expired records, and not going to panic about their existence...
 		#
 		ts_now = timestamp(0)
-		case :ets.lookup Discachex.Defs.CacheRec, key do
-			[Discachex.Defs.CacheRec[stamp_id: time, value: value]] when time > ts_now -> value
+		case :ets.lookup :cacherec, key do
+			[Discachex.Defs.cacherec(stamp_id: time, value: value)] when time > ts_now -> value
 			_ -> nil
 		end
 	end
@@ -178,30 +180,31 @@ defmodule Discachex.Storage do
 		#
 		# just report what we have now, no matter what it takes...
 		#
-		case :ets.lookup Discachex.Defs.CacheRec, key do
-			[Discachex.Defs.CacheRec[value: value]] -> value
+		case :ets.lookup :cacherec, key do
+			[Discachex.Defs.cacherec(value: value)] -> value
 			_ -> nil
 		end
 	end
 
 	def list_old_keys key, ts_now do
-		case :ets.lookup Discachex.Defs.CacheRec, key do
+		case :ets.lookup :cacherec, key do
 			:'$end_of_table' -> []
-			[Discachex.Defs.CacheRec[key: key, stamp_id: stamp]] when stamp < ts_now ->
-				[key|list_old_keys :ets.next(Discachex.Defs.CacheRec,key), ts_now]
-			[Discachex.Defs.CacheRec[]] -> list_old_keys :ets.next(Discachex.Defs.CacheRec,key), ts_now
+			[Discachex.Defs.cacherec(key: key, stamp_id: stamp)] when stamp < ts_now ->
+				[key|list_old_keys :ets.next(:cacherec,key), ts_now]
+			[Discachex.Defs.cacherec()] -> list_old_keys :ets.next(:cacherec,key), ts_now
 			_ -> []
 		end
 	end
 	def list_old_keys do
 		ts_now = timestamp 0
-		key = :ets.first Discachex.Defs.CacheRec
+		key = :ets.first :cacherec
 		list_old_keys key, ts_now
 	end
 end
 
 defmodule Discachex.SerialKiller do
-	use GenServer.Behaviour
+	require Discachex.Defs
+	use GenServer
 	@refresh_timeout :timer.seconds(1)
 
 	def start_link, do: :gen_server.start_link({:local, Discachex.SerialKiller}, Discachex.SerialKiller, [], [])
@@ -212,11 +215,11 @@ defmodule Discachex.SerialKiller do
 	end
 
 	def init(_) do
-		:mnesia.wait_for_tables [Discachex.Defs.CacheRec], :infinity
-		keys = :mnesia.dirty_all_keys(Discachex.Defs.CacheRec)
+		:mnesia.wait_for_tables [:cacherec], :infinity
+		keys = :mnesia.dirty_all_keys(:cacherec)
 		tree = Enum.reduce keys, :gb_trees.empty, fn key, tree ->
-			case :ets.lookup Discachex.Defs.CacheRec, key do
-				[Discachex.Defs.CacheRec[stamp_id: stamp]] when is_integer(stamp) ->
+			case :ets.lookup :cacherec, key do
+				[Discachex.Defs.cacherec(stamp_id: stamp)] when is_integer(stamp) ->
 					case :gb_trees.is_defined stamp, tree do
 						false -> :gb_trees.insert stamp, [key], tree
 						true  ->
@@ -237,9 +240,9 @@ defmodule Discachex.SerialKiller do
 				case stamp < ts_now do
 					true ->
 						Enum.each(keys, fn key ->
-							case :ets.lookup(Discachex.Defs.CacheRec, key) do
-								[Discachex.Defs.CacheRec[stamp_id: new_stamp]] when new_stamp < ts_now ->
-									:mnesia.dirty_delete Discachex.Defs.CacheRec, key
+							case :ets.lookup(:cacherec, key) do
+								[Discachex.Defs.cacherec(stamp_id: new_stamp)] when new_stamp < ts_now ->
+									:mnesia.dirty_delete :cacherec, key
 								_ -> :ok
 							end
 						end)
@@ -253,7 +256,7 @@ defmodule Discachex.SerialKiller do
 		end
 	end
 
-	def handle_cast({:expire, key, nil}, tree), do: {:noreply, tree, @refresh_timeout}
+	def handle_cast({:expire, _key, nil}, tree), do: {:noreply, tree, @refresh_timeout}
 	def handle_cast({:expire, key, stamp}, tree) do
 		tree = case :gb_trees.is_defined stamp, tree do
 			false -> :gb_trees.insert stamp, [key], tree
@@ -266,7 +269,7 @@ defmodule Discachex.SerialKiller do
 end
 
 defmodule Discachex.GC do
-	use GenServer.Behaviour
+	use GenServer
 
 	def start_link, do: :gen_server.start_link(Discachex.GC, [], [])
 
@@ -278,7 +281,7 @@ defmodule Discachex.GC do
 	def handle_info :cleanup, state do
 		{time, _} = :timer.tc fn -> 
 			Discachex.Storage.list_old_keys 
-			|> Enum.each &(:mnesia.dirty_delete Discachex.Defs.CacheRec, &1)
+			|> Enum.each &(:mnesia.dirty_delete :cacherec, &1)
 		end
 		cond do
 			time > 100000 -> IO.puts "Clean-up took #{time}us\r"
