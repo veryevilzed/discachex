@@ -95,7 +95,10 @@ defmodule Discachex.Storage do
 		case :pg2.get_members :discachex_waiters do
 			{:error, {:no_such_group, :ok}} -> :ok
 			list when length(list) > 0 ->
-				for pid <- (list |> Enum.uniq), do: send(pid, {:key_updated, key, value})
+				for pid <- (list |> Enum.uniq) do
+					:pg2.leave :discachex_waiters, pid
+					send(pid, {:key_updated, key, value})
+				end
 			_ -> :ok
 		end
 	end
